@@ -1,0 +1,19 @@
+# Weights and Biases folder
+pytorch/wandb/
+runs/
+script/
+pretrain_1000_epochs/
+pretrain_500_epochs/
+linprobe_regression/
+finetune_multi/
+finetune_multi_log/
+
+.vscode/
+__pycache__/
+.ipynb_checkpoints/
+
+# Weights
+*.tar
+
+# Test scripts
+test_*.sh
