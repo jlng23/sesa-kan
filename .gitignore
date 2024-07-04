@@ -4,6 +4,8 @@ runs/
 script/
 pretrain_1000_epochs/
 pretrain_500_epochs/
+pretrain1st_2nd_800_epochs/
+pretrain2nd_800_epochs/
 linprobe_regression/
 finetune_multi/
 finetune_multi_log/

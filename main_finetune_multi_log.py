@@ -30,7 +30,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 
 import util.lr_decay as lrd
 import util.misc as misc
-from util.datasets import build_dataset, build_dataset_age
+from util.datasets import build_dataset, build_dataset_multi
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
@@ -176,8 +176,8 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_train = build_dataset_age(is_train=True, args=args)
-    dataset_val = build_dataset_age(is_train=False, args=args)
+    dataset_train = build_dataset_multi(is_train=True, args=args, use_sex=True, use_age = True, use_1st=False)
+    dataset_val = build_dataset_multi(is_train=False, args=args, use_sex=True, use_age = True, use_1st=False)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -336,7 +336,7 @@ def main(args):
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
-    best_mae, best_f1 = float('inf'), float('inf')
+    best_mae, best_loss = float('inf'), float('inf')
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -356,9 +356,9 @@ def main(args):
         print(f"REGRESSION of the network on the {len(dataset_val)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
         print(f"CLASSIFICATION of the network on the {len(dataset_val)} test images: ACC= {test_stats['acc']:.4f} F1= {test_stats['f1']:.4f}")
         best_mae = min(best_mae, test_stats["mae"])
-        best_f1 = max(best_f1, test_stats["f1"])
+        best_loss = min(best_loss, test_stats["loss"])
         print(f'Best MAE: {best_mae:.4f}')
-        print(f'Best F1: {best_f1:.4f}')
+        print(f'Best Loss: {best_loss:.4f}')
 
         if log_writer is not None:
             log_writer.add_scalar('perf/test_mae', test_stats['mae'], epoch)

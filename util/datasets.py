@@ -35,6 +35,7 @@ class RadiographSexAgeDataset(Dataset):
         use_sex: bool = True,
         use_age: bool = True,
         use_1st: bool = True,
+        use_2nd: bool = True,
         bia_paper: bool = True,
         age_division: int = 100
     ):
@@ -47,6 +48,7 @@ class RadiographSexAgeDataset(Dataset):
         self.use_sex = use_sex
         self.use_age = use_age
         self.use_1st = use_1st
+        self.use_2nd = use_2nd
         self.bia_paper = bia_paper
 
         self.age_division = age_division
@@ -75,6 +77,8 @@ class RadiographSexAgeDataset(Dataset):
                     img_relpath = line.strip()
 
                     if not self.use_1st and img_relpath.startswith('1st-set/'):
+                        continue
+                    if not self.use_2nd and img_relpath.startswith('2nd-set/'):
                         continue
 
                     filename = img_relpath.split('/')[-1]
@@ -159,7 +163,7 @@ def build_dataset(is_train, args):
 
     return dataset
 
-def build_dataset_age(is_train, args, transform = None):
+def build_dataset_multi(is_train, args, transform = None, use_sex=True, use_age = True, use_1st=False, use_2nd = True):
     
     train_folds = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
     val_folds = [26, 27, 28, 29, 30]
@@ -178,9 +182,10 @@ def build_dataset_age(is_train, args, transform = None):
                 args.data_path,
                 folds[subset],
                 transforms=transform,
-                use_sex=True,
-                use_age=True,
-                use_1st=False,
+                use_sex=use_sex,
+                use_age=use_age,
+                use_1st=use_1st,
+                use_2nd=use_2nd, 
                 bia_paper=False
             )
 

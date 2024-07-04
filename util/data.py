@@ -29,6 +29,7 @@ class RadiographSexAgeDataset(Dataset):
         use_sex: bool = True,
         use_age: bool = True,
         use_1st: bool = True,
+        use_2nd: bool = True,
         bia_paper: bool = True,
         age_division: int = 100
     ):
@@ -41,6 +42,8 @@ class RadiographSexAgeDataset(Dataset):
         self.use_sex = use_sex
         self.use_age = use_age
         self.use_1st = use_1st
+        self.use_2nd = use_2nd
+        
         self.bia_paper = bia_paper
 
         self.age_division = age_division
@@ -69,6 +72,9 @@ class RadiographSexAgeDataset(Dataset):
                     img_relpath = line.strip()
 
                     if not self.use_1st and img_relpath.startswith('1st-set/'):
+                        print('Using 1st-set.')
+                        continue
+                    if not self.use_2nd and img_relpath.startswith('2nd-set/'):
                         continue
 
                     if self.bia_paper and filter_files_bia_paper(img_relpath):

@@ -21,7 +21,7 @@ import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-from util.datasets import build_dataset, build_dataset_age
+from util.datasets import build_dataset, build_dataset_multi
 
 import timm
 
@@ -128,7 +128,7 @@ def main(args):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
     
     # dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
-    dataset_train = build_dataset_age(is_train=True, transform=transform_train, args=args)
+    dataset_train = build_dataset_multi(is_train=True, transform=transform_train, args=args, use_sex=True, use_age = False, use_1st=True, use_2nd=True)
     print(dataset_train)
 
     if True:  # args.distributed:
