@@ -163,15 +163,9 @@ def build_dataset(is_train, args):
 
     return dataset
 
-def build_dataset_multi(is_train, args, transform = None, use_sex=True, use_age = True, use_1st=False, use_2nd = True):
+def build_dataset_multi(is_train, args, folds, transform = None, use_sex=True, use_age = True, use_1st=False, use_2nd = True):
     
-    train_folds = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
-    val_folds = [26, 27, 28, 29, 30]
     
-    folds = {
-        'train': train_folds,
-        'val':   val_folds
-    }
     # root = os.path.join(args.data_path, 'train' if is_train else 'val')
     subset = 'train' if is_train else 'val'
     
@@ -180,7 +174,7 @@ def build_dataset_multi(is_train, args, transform = None, use_sex=True, use_age 
         
     dataset = RadiographSexAgeDataset(
                 args.data_path,
-                folds[subset],
+                folds,
                 transforms=transform,
                 use_sex=use_sex,
                 use_age=use_age,

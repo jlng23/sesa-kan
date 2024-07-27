@@ -30,7 +30,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 
 import util.lr_decay as lrd
 import util.misc as misc
-from util.datasets import build_dataset, build_dataset_age
+from util.datasets import build_dataset, build_dataset_multi
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
@@ -174,8 +174,8 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_train = build_dataset_age(is_train=True, args=args)
-    dataset_val = build_dataset_age(is_train=False, args=args)
+    dataset_train = build_dataset_multi(is_train=True, args=args)
+    dataset_val = build_dataset_multi(is_train=False, args=args)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()

@@ -38,6 +38,11 @@ from util import losses
 import models_vit
 
 from engine_finetune import evaluate_multi, train_multi_one_epoch
+from sklearn.model_selection import KFold
+# Define a nova camada final para a rede KAN
+# import util.fastkan as kan
+import kan
+import torch.nn as nn
 
 
 def get_args_parser():
@@ -127,7 +132,16 @@ def get_args_parser():
                         help='dataset path')
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number of the classification types')
-
+    parser.add_argument('--head_kan', default=False, type=bool,
+                        help='head of the model is KAN')
+    parser.add_argument('--num_folds', default=5, type=int,
+                        help='number of the folds')
+    
+    parser.add_argument('--train_folds', default=[i for i in range(1, 25 + 1)],
+                        help='folds of the train')
+    # parser.add_argument('--val_folds', default=[i for i in range(21, 25 + 1)],
+    #                     help='folds of the train')
+                       
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
     parser.add_argument('--log_dir', default='./output_dir',
@@ -161,7 +175,7 @@ def get_args_parser():
     return parser
 
 
-def main(args):
+def train(args, fold, train_folds, val_folds):
     misc.init_distributed_mode(args)
 
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
@@ -176,8 +190,8 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_train = build_dataset_multi(is_train=True, args=args, use_sex=True, use_age = True, use_1st=False)
-    dataset_val = build_dataset_multi(is_train=False, args=args, use_sex=True, use_age = True, use_1st=False)
+    dataset_train = build_dataset_multi(is_train=True, folds= train_folds, args=args)
+    dataset_val = build_dataset_multi(is_train=False, folds = val_folds, args=args)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -261,15 +275,35 @@ def main(args):
 
         # manually initialize fc layer
         trunc_normal_(model.head.weight, std=2e-5)
+    
+    if args.head_kan:
+        input_dim = model.head.in_features  # Obtém o número de características de entrada da última camada original
+        output_dim = args.nb_classes
+               
+        class KANLayer(nn.Module):
+            def __init__(self, input_dim, output_dim):
+                super(KANLayer, self).__init__()
+                # Crie a camada KAN
+                self.fc1 = kan.KANLinear(input_dim, 128)
+                self.fc2 = kan.KANLinear(128, 64)
+                self.fc = kan.KANLinear(64, output_dim)
+                # Adicione outras camadas ou operações conforme necessário para a rede KAN
+
+            def forward(self, x):
+                # Aplica a camada KAN
+                x = self.fc1(x)
+                x = self.fc2(x)
+                return self.fc(x)
         
+        model.head = KANLayer(input_dim, output_dim)  
+          
     if (args.criterion == 'adaptive'):
         adaptive_mode = 'standard'
     elif (args.criterion == 'log_adaptive'):
         adaptive_mode = 'log'
     else:
-        adaptive_mode = None 
-        
-        
+        adaptive_mode = None
+    
     if adaptive_mode == "standard":
         model.sigma1 = torch.nn.Parameter(torch.ones(1))
         model.sigma2 = torch.nn.Parameter(torch.ones(1))
@@ -333,11 +367,10 @@ def main(args):
         print(f"REG of the network on the {len(dataset_val)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
         print(f"CLA of the network on the {len(dataset_val)} test images: ACC= {test_stats['acc']:.4f} F1= {test_stats['f1']:.4f}")
         exit(0)
-
+ 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
-    best_mae, best_loss = float('inf'), float('inf')
-    current_loss = float('inf')
+    best_mae, best_f1, best_loss = float('inf'), float('inf'), float('inf')
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -348,24 +381,24 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
-        
-        
-        if args.output_dir:
-            # if test_stats["loss"] > best_loss:
-            misc.save_model(
-                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch)
 
         test_stats = evaluate_multi(data_loader_val, model, device, args.criterion, "SexAgeMeter")
         print(f"REGRESSION of the network on the {len(dataset_val)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
         print(f"CLASSIFICATION of the network on the {len(dataset_val)} test images: ACC= {test_stats['acc']:.4f} F1= {test_stats['f1']:.4f}")
-        
-                
         best_mae = min(best_mae, test_stats["mae"])
         best_loss = min(best_loss, test_stats["loss"])
+        best_f1 = max(best_f1, test_stats["f1"])
         
         print(f'Best MAE: {best_mae:.4f}')
-        print(f'Best Loss: {best_loss:.4f}')
+        print(f'Best MAE: {best_mae:.4f}')
+        print(f'Best F1: {best_f1:.4f}')
+        
+        curr_val_loss = test_stats["loss"]
+        if best_loss > curr_val_loss:
+            if args.output_dir:
+                misc.save_model(
+                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    loss_scaler=loss_scaler, epoch=epoch, fold=fold)
         if log_writer is not None:
             log_writer.add_scalar('perf/test_mae', test_stats['mae'], epoch)
             log_writer.add_scalar('perf/test_f1', test_stats['f1'], epoch)
@@ -385,6 +418,21 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+    
+
+def main(args):
+    
+    folder_maker = KFold(n_splits=args.num_folds)
+    for fold, (__train_folds, __val_folds) in enumerate(folder_maker.split(args.train_folds)):
+        ## HACK: correct to 1-indexing, since KFold generates 0-indexed indices
+        train_folds = list(map(lambda x: x + 1, __train_folds))
+        val_folds = list(map(lambda x: x + 1, __val_folds))
+        
+        print(f" Training : iteration {fold + 1} of cross-validation ".center(80, "-"))
+        print(f" Validation folds: {val_folds} ".center(80, "-"))
+        print(f" Training folds: {train_folds} ".center(80, "-"))  
+        
+        train(args, fold, train_folds = train_folds, val_folds = val_folds)
 
 
 

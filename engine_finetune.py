@@ -95,7 +95,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
-# from torchmetrics.functional import mean_squared_error
+from torchmetrics.functional import mean_squared_error
 # import math
 # import sys
 # from typing import Iterable, Optional
@@ -161,9 +161,9 @@ def train_reg_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         loss_value_reduce = misc.all_reduce_mean(loss_value)
 
         # Calculate and log the Mean Squared Error
-        mse_value = mean_squared_error(outputs, targets).item()
-        metric_logger.update(mse=mse_value)
-        mse_value_reduce = misc.all_reduce_mean(mse_value)
+        # mse_value = mean_squared_error(outputs, targets).item()
+        # metric_logger.update(mse=mse_value)
+        # mse_value_reduce = misc.all_reduce_mean(mse_value)
         
         if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
             """ We use epoch_1000x as the x-axis in tensorboard.
@@ -172,7 +172,7 @@ def train_reg_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
             log_writer.add_scalar('loss', loss_value_reduce, epoch_1000x)
             log_writer.add_scalar('lr', max_lr, epoch_1000x)
-            log_writer.add_scalar('mse', mse_value_reduce, epoch_1000x)
+            # log_writer.add_scalar('mse', mse_value_reduce, epoch_1000x)
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
@@ -371,22 +371,19 @@ def evaluate_reg(data_loader, model, device):
             output = model(images)
             loss = criterion(output, target)
 
-        # mse = mean_squared_error(output, target)
-        # mae = mean_absolute_error(output, target)
-        # r2 = r2_score(output, target)
-        # rse = relative_squared_error(output, target)
-        # meter.update(output, target)
+        meter.update(output.detach().cpu().numpy(), target.detach().cpu().numpy())
 
+        get_meters = meter.get_metrics()
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
-        # metric_logger.meters['mae'].update(mae.item(), n=batch_size)
-        # metric_logger.meters['r2'].update(r2.item(), n=batch_size)
+        metric_logger.meters['mae'].update(get_meters['mae'].item(), n=batch_size)
+        metric_logger.meters['r2'].update(get_meters['r2'].item(), n=batch_size)
         # metric_logger.meters['rse'].update(rse.item(), n=batch_size)
         
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
-    print('*  loss {losses.global_avg:.3f} MAE {mse.global_avg:.3f} R2 {r2.global_avg:.3f} RSE {rse.global_avg:.3f}'
-          .format( losses=metric_logger.loss, mse=metric_logger.mae, r2=metric_logger.r2, rse=metric_logger.rse))
+    print('*  loss {losses.global_avg:.3f} MAE {mae.global_avg:.3f} R2 {r2.global_avg:.3f}'
+          .format( losses=metric_logger.loss, mae=metric_logger.mae, r2=metric_logger.r2))
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 

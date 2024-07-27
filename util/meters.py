@@ -10,7 +10,7 @@ def get_meter(meter_name):
     if meter_name == 'SexAgeMeter':
         return SexAgeMeter()
     elif meter_name == 'RegressionMeter':
-        return RegressionMeter()
+        return RegressionMeter_r2()
     elif meter_name == 'BinaryClassificationMeter':
         return BinaryClassificationMeter()
     else:

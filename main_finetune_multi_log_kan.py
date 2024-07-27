@@ -30,7 +30,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 
 import util.lr_decay as lrd
 import util.misc as misc
-from util.datasets import build_dataset, build_dataset_age
+from util.datasets import build_dataset, build_dataset_multi
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
@@ -178,8 +178,8 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_train = build_dataset_age(is_train=True, args=args)
-    dataset_val = build_dataset_age(is_train=False, args=args)
+    dataset_train = build_dataset_multi(is_train=True, args=args)
+    dataset_val = build_dataset_multi(is_train=False, args=args)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -237,30 +237,6 @@ def main(args):
         drop_path_rate=args.drop_path,
         global_pool=args.global_pool,
     )
-    if args.head_kan:
-        input_dim = model.head.in_features  # Obtém o número de características de entrada da última camada original
-        output_dim = args.nb_classes
-        
-        # Define a nova camada final para a rede KAN
-        import kan
-        import torch.nn as nn
-        
-        class KANLayer(nn.Module):
-            def __init__(self, input_dim, output_dim):
-                super(KANLayer, self).__init__()
-                # Crie a camada KAN
-                self.fc1 = kan.KANLinear(input_dim, 128)
-                self.fc2 = kan.KANLinear(128, 64)
-                self.fc = kan.KANLinear(64, output_dim)
-                # Adicione outras camadas ou operações conforme necessário para a rede KAN
-
-            def forward(self, x):
-                # Aplica a camada KAN
-                x = self.fc1(x)
-                x = self.fc2(x)
-                return self.fc(x)
-        
-        model.head = KANLayer(input_dim, output_dim)
 
     if args.finetune and not args.eval:
         checkpoint = torch.load(args.finetune, map_location='cpu')
@@ -287,7 +263,32 @@ def main(args):
 
         # manually initialize fc layer
         trunc_normal_(model.head.weight, std=2e-5)
+    
+    if args.head_kan:
+        input_dim = model.head.in_features  # Obtém o número de características de entrada da última camada original
+        output_dim = args.nb_classes
         
+        # Define a nova camada final para a rede KAN
+        # import util.fastkan as kan
+        import kan
+        import torch.nn as nn
+        
+        class KANLayer(nn.Module):
+            def __init__(self, input_dim, output_dim):
+                super(KANLayer, self).__init__()
+                # Crie a camada KAN
+                self.fc1 = kan.KANLinear(input_dim, 128)
+                self.fc2 = kan.KANLinear(128, 64)
+                self.fc = kan.KANLinear(64, output_dim)
+                # Adicione outras camadas ou operações conforme necessário para a rede KAN
+
+            def forward(self, x):
+                # Aplica a camada KAN
+                x = self.fc1(x)
+                x = self.fc2(x)
+                return self.fc(x)
+        
+        model.head = KANLayer(input_dim, output_dim)    
     if (args.criterion == 'adaptive'):
         adaptive_mode = 'standard'
     elif (args.criterion == 'log_adaptive'):
@@ -354,7 +355,7 @@ def main(args):
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
     if args.eval:
-        test_stats = evaluate_multi(data_loader_val, model, device)
+        test_stats = evaluate_multi(data_loader_val, model, device, args.criterion, "SexAgeMeter")
         print(f"REG of the network on the {len(dataset_val)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
         print(f"CLA of the network on the {len(dataset_val)} test images: ACC= {test_stats['acc']:.4f} F1= {test_stats['f1']:.4f}")
         exit(0)

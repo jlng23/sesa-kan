@@ -30,7 +30,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 
 import util.lr_decay as lrd
 import util.misc as misc
-from util.datasets import build_dataset, build_dataset_age
+from util.datasets import build_dataset, build_dataset_multi
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
@@ -170,8 +170,8 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_train = build_dataset_age(is_train=True, args=args)
-    dataset_val = build_dataset_age(is_train=False, args=args)
+    dataset_train = build_dataset_multi(is_train=True, args=args)
+    dataset_val = build_dataset_multi(is_train=False, args=args)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -324,7 +324,7 @@ def main(args):
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
-        test_stats = evaluate(data_loader_val, model, device)
+        test_stats = evaluate_reg(data_loader_val, model, device)
         print(f"MSE of the network on the {len(dataset_val)} test images: {test_stats['mae']:.4f}")
         best_mse = min(best_mse, test_stats["mae"])
         print(f'Best MAE: {best_mse:.4f}')
