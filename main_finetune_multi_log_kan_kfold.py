@@ -41,7 +41,8 @@ from engine_finetune import evaluate_multi, train_multi_one_epoch
 from sklearn.model_selection import KFold
 # Define a nova camada final para a rede KAN
 # import util.fastkan as kan
-import kan
+# import kan
+from models_mae import KANLayer
 import torch.nn as nn
 
 
@@ -63,8 +64,23 @@ def get_args_parser():
     parser.add_argument('--drop_path', type=float, default=0.1, metavar='PCT',
                         help='Drop path rate (default: 0.1)')
     
+    # MTL parameters
     parser.add_argument('--adaptive_mode', default='log', type=str, metavar='MODE', 
                         help='Adaptive mode for noise parameters (standard, log)')
+    parser.add_argument('--use_age', type=bool, default=True)
+    parser.add_argument('--use_sex', type=bool, default=True)
+    parser.add_argument('--criterion', default= 'log_adaptive', type=str,
+                        help='loss function')
+    parser.add_argument('--head_kan', default=False, type=bool,
+                        help='head of the model is KAN')
+    parser.add_argument('--num_folds', default=5, type=int,
+                        help='number of the folds')
+    
+    parser.add_argument('--train_folds', default=[i for i in range(1, 30 + 1)],
+                        help='folds of the train')
+    # parser.add_argument('--val_folds', default=[i for i in range(21, 25 + 1)],
+    #                     help='folds of the train')
+    
     # Optimizer parameters
     parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',
                         help='Clip gradient norm (default: None, no clipping)')
@@ -84,8 +100,6 @@ def get_args_parser():
     parser.add_argument('--warmup_epochs', type=int, default=5, metavar='N',
                         help='epochs to warmup LR')
 
-    parser.add_argument('--criterion', default= 'log_adaptive', type=str,
-                        help='loss function')
     
     # Augmentation parameters
     parser.add_argument('--color_jitter', type=float, default=None, metavar='PCT',
@@ -132,15 +146,6 @@ def get_args_parser():
                         help='dataset path')
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number of the classification types')
-    parser.add_argument('--head_kan', default=False, type=bool,
-                        help='head of the model is KAN')
-    parser.add_argument('--num_folds', default=5, type=int,
-                        help='number of the folds')
-    
-    parser.add_argument('--train_folds', default=[i for i in range(1, 25 + 1)],
-                        help='folds of the train')
-    # parser.add_argument('--val_folds', default=[i for i in range(21, 25 + 1)],
-    #                     help='folds of the train')
                        
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
@@ -174,8 +179,82 @@ def get_args_parser():
 
     return parser
 
+def train(args, model, criterion, data_loader_train, data_loader_val, dataset_val, optimizer,model_without_ddp, device, loss_scaler, mixup_fn, log_writer, n_parameters, adaptive_mode, fold):
+    print(f"Start training for {args.epochs} epochs")
+    start_time = time.time()
+    best_mae, best_f1, best_loss, best_epoch = float('inf'), float('inf'), float('inf'), 0
+    adaptive = False
+    if adaptive_mode != None:
+        adaptive = True
+    for epoch in range(args.start_epoch, args.epochs):
+        
+        if args.distributed:
+            data_loader_train.sampler.set_epoch(epoch)
+        
+        train_stats = train_multi_one_epoch(
+            model, criterion, data_loader_train,
+            optimizer, device, epoch, loss_scaler,
+            args.clip_grad, mixup_fn,
+            log_writer=log_writer,
+            adaptive = adaptive,
+            args=args
+        )
+        
+        print(f"Fold {fold}")
+        test_stats = evaluate_multi(data_loader_val, model, device, args.criterion, "SexAgeMeter")
+        print(f"REGRESSION of the network on the {len(dataset_val)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
+        print(f"CLASSIFICATION of the network on the {len(dataset_val)} test images: ACC= {test_stats['acc']:.4f} F1= {test_stats['f1']:.4f}")
+        # best_mae = min(best_mae, test_stats["mae"])
+        # best_f1 = max(best_f1, test_stats["f1"])
+        
+        curr_val_loss = test_stats["loss"]
+        if best_loss > curr_val_loss:
+            print(f'Loss decreased from {best_loss:.4f} to {curr_val_loss:.4f} ({epoch}/{args.epochs})')
+            
+            best_loss = curr_val_loss
+            best_epoch = epoch
+            
+            best_f1 = test_stats["f1"]
+            best_mae = test_stats["mae"]
+            
+            if args.output_dir:
+                misc.save_model(
+                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                    loss_scaler=loss_scaler, epoch=epoch, fold=fold)
+        
+        else:
+            print(f'Loss continue to be {best_loss:.4f} ({best_epoch}/{args.epochs})')
+            
+        print(f'Best Loss: {best_loss:.4f}')            
+        print(f'Best MAE: {best_mae:.4f}')
+        print(f'Best F1: {best_f1:.4f}')
+        
+        if adaptive_mode != None:
+            print(f'Sigma 1: {model.sigma1[0]}, Sigma 2: {model.sigma2[0]}')
+             
+        if log_writer is not None:
+            log_writer.add_scalar('perf/test_mae', test_stats['mae'], epoch)
+            log_writer.add_scalar('perf/test_f1', test_stats['f1'], epoch)
+            log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
 
-def train(args, fold, train_folds, val_folds):
+        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                        **{f'test_{k}': v for k, v in test_stats.items()},
+                        'epoch': epoch,
+                        'n_parameters': n_parameters}
+
+        if args.output_dir and misc.is_main_process():
+            if log_writer is not None:
+                log_writer.flush()
+            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                f.write(json.dumps(log_stats) + "\n")
+
+    total_time = time.time() - start_time
+    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    print('Training time {}'.format(total_time_str))
+    
+    return test_stats
+
+def pipeline(args, fold, train_folds, val_folds):
     misc.init_distributed_mode(args)
 
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
@@ -244,7 +323,15 @@ def train(args, fold, train_folds, val_folds):
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
     
-    model = models_vit.__dict__[args.model](
+          
+    if (args.criterion == 'adaptive'):
+        adaptive_mode = 'standard'
+    elif (args.criterion == 'log_adaptive'):
+        adaptive_mode = 'log'
+    else:
+        adaptive_mode = None
+        
+    model = models_vit.__dict__[args.model](adaptive_mode,
         num_classes=args.nb_classes,
         drop_path_rate=args.drop_path,
         global_pool=args.global_pool,
@@ -268,7 +355,9 @@ def train(args, fold, train_folds, val_folds):
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
 
-        if args.global_pool:
+        if args.global_pool and adaptive_mode != None:
+            assert set(msg.missing_keys) == {'sigma1', 'sigma2','head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}     
+        elif args.global_pool and adaptive_mode == None:
             assert set(msg.missing_keys) == {'head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}
         else:
             assert set(msg.missing_keys) == {'head.weight', 'head.bias'}
@@ -279,41 +368,7 @@ def train(args, fold, train_folds, val_folds):
     if args.head_kan:
         input_dim = model.head.in_features  # Obtém o número de características de entrada da última camada original
         output_dim = args.nb_classes
-               
-        class KANLayer(nn.Module):
-            def __init__(self, input_dim, output_dim):
-                super(KANLayer, self).__init__()
-                # Crie a camada KAN
-                self.fc1 = kan.KANLinear(input_dim, 128)
-                self.fc2 = kan.KANLinear(128, 64)
-                self.fc = kan.KANLinear(64, output_dim)
-                # Adicione outras camadas ou operações conforme necessário para a rede KAN
-
-            def forward(self, x):
-                # Aplica a camada KAN
-                x = self.fc1(x)
-                x = self.fc2(x)
-                return self.fc(x)
-        
         model.head = KANLayer(input_dim, output_dim)  
-          
-    if (args.criterion == 'adaptive'):
-        adaptive_mode = 'standard'
-    elif (args.criterion == 'log_adaptive'):
-        adaptive_mode = 'log'
-    else:
-        adaptive_mode = None
-    
-    if adaptive_mode == "standard":
-        model.sigma1 = torch.nn.Parameter(torch.ones(1))
-        model.sigma2 = torch.nn.Parameter(torch.ones(1))
-        print(' Using noise parameters sigma1, sigma2 '.center(80, '-'))
-    elif adaptive_mode == "log":
-        model.sigma1 = torch.nn.Parameter(torch.zeros(1))
-        model.sigma2 = torch.nn.Parameter(torch.zeros(1))
-        print(' Using log of noise parameters sigma1, sigma2 '.center(80, '-'))
-    else:
-        pass
     
     model.to(device)
 
@@ -345,6 +400,7 @@ def train(args, fold, train_folds, val_folds):
     )
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
     loss_scaler = NativeScaler()
+    
 
     if mixup_fn is not None:
         # smoothing is handled with mixup label transform
@@ -367,60 +423,24 @@ def train(args, fold, train_folds, val_folds):
         print(f"REG of the network on the {len(dataset_val)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
         print(f"CLA of the network on the {len(dataset_val)} test images: ACC= {test_stats['acc']:.4f} F1= {test_stats['f1']:.4f}")
         exit(0)
- 
-    print(f"Start training for {args.epochs} epochs")
-    start_time = time.time()
-    best_mae, best_f1, best_loss = float('inf'), float('inf'), float('inf')
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            data_loader_train.sampler.set_epoch(epoch)
-        train_stats = train_multi_one_epoch(
-            model, criterion, data_loader_train,
-            optimizer, device, epoch, loss_scaler,
-            args.clip_grad, mixup_fn,
-            log_writer=log_writer,
-            args=args
-        )
-
-        test_stats = evaluate_multi(data_loader_val, model, device, args.criterion, "SexAgeMeter")
-        print(f"REGRESSION of the network on the {len(dataset_val)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
-        print(f"CLASSIFICATION of the network on the {len(dataset_val)} test images: ACC= {test_stats['acc']:.4f} F1= {test_stats['f1']:.4f}")
-        best_mae = min(best_mae, test_stats["mae"])
-        best_loss = min(best_loss, test_stats["loss"])
-        best_f1 = max(best_f1, test_stats["f1"])
-        
-        print(f'Best MAE: {best_mae:.4f}')
-        print(f'Best MAE: {best_mae:.4f}')
-        print(f'Best F1: {best_f1:.4f}')
-        
-        curr_val_loss = test_stats["loss"]
-        if best_loss > curr_val_loss:
-            if args.output_dir:
-                misc.save_model(
-                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                    loss_scaler=loss_scaler, epoch=epoch, fold=fold)
-        if log_writer is not None:
-            log_writer.add_scalar('perf/test_mae', test_stats['mae'], epoch)
-            log_writer.add_scalar('perf/test_f1', test_stats['f1'], epoch)
-            log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
-
-        log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        **{f'test_{k}': v for k, v in test_stats.items()},
-                        'epoch': epoch,
-                        'n_parameters': n_parameters}
-
-        if args.output_dir and misc.is_main_process():
-            if log_writer is not None:
-                log_writer.flush()
-            with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
-                f.write(json.dumps(log_stats) + "\n")
-
-    total_time = time.time() - start_time
-    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-    print('Training time {}'.format(total_time_str))
+    
+    m = train(args,
+          model,
+          criterion,
+          data_loader_train,
+          data_loader_val,
+          dataset_val,
+          optimizer, 
+          model_without_ddp,
+          device,
+          loss_scaler, mixup_fn, log_writer, n_parameters, adaptive_mode, fold)
+    
+    return m
     
 
 def main(args):
+    history = []
+    cv_metrics : list[dict] = []
     
     folder_maker = KFold(n_splits=args.num_folds)
     for fold, (__train_folds, __val_folds) in enumerate(folder_maker.split(args.train_folds)):
@@ -432,7 +452,28 @@ def main(args):
         print(f" Validation folds: {val_folds} ".center(80, "-"))
         print(f" Training folds: {train_folds} ".center(80, "-"))  
         
-        train(args, fold, train_folds = train_folds, val_folds = val_folds)
+        m = pipeline(args, fold, train_folds = train_folds, val_folds = val_folds)
+        cv_metrics.append(m)
+    
+    if (args.use_sex and args.use_age):
+        print(80 * "-")
+        print(f"Mean of Mean Absolute Error (MAE): {np.mean([m['mae'] for m in cv_metrics])}".center(80, "-"))
+        print(f"Standard deviation of Mean Absolute Error (MAE): {np.std([m['mae'] for m in cv_metrics])}".center(80, "-"))
+        print(80 * "-")
+        
+        print(80 * "-")
+        print(f"Mean of F1 score: {np.mean([m['f1'] for m in cv_metrics])}".center(80, "-"))
+        print(f"Standard deviation of F1 score: {np.std([m['f1'] for m in cv_metrics])}".center(80, "-"))
+        print(80 * "-")
+        
+    elif (args.use_age):
+        print(80 * "-")
+        print(f"Standard deviation of Mean Absolute Error (MAE): {np.std([m['mae'] for m in cv_metrics])}".center(80, "-"))
+        print(80 * "-")
+    elif(args.use_sex):
+        print(80 * "-")
+        print(f"Standard deviation of F1 score: {np.std([m['f1'] for m in cv_metrics])}".center(80, "-"))
+        print(80 * "-")
 
 
 

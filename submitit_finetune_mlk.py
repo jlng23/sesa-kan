@@ -42,7 +42,7 @@ def get_shared_folder() -> Path:
 
 def get_init_file():
     # Init file must not exist, but it's parent dir must exist.
-    os.makedirs(str(get_shared_folder()), exist_ok=True)
+    # os.makedirs(str(get_shared_folder()), exist_ok=True)
     init_file = get_shared_folder() / f"{uuid.uuid4().hex}_init"
     if init_file.exists():
         os.remove(str(init_file))

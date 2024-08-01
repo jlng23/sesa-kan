@@ -243,8 +243,24 @@ def mae_vit_huge_patch14_dec512d8b(**kwargs):
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
-
 # set recommended archs
 mae_vit_base_patch16 = mae_vit_base_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vit_large_patch16 = mae_vit_large_patch16_dec512d8b  # decoder: 512 dim, 8 blocks
 mae_vit_huge_patch14 = mae_vit_huge_patch14_dec512d8b  # decoder: 512 dim, 8 blocks
+
+import kan
+
+class KANLayer(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(KANLayer, self).__init__()
+        # Crie a camada KAN
+        self.fc1 = kan.KANLinear(input_dim, 128)
+        self.fc2 = kan.KANLinear(128, 64)
+        self.fc = kan.KANLinear(64, output_dim)
+        # Adicione outras camadas ou operações conforme necessário para a rede KAN
+
+    def forward(self, x):
+        # Aplica a camada KAN
+        x = self.fc1(x)
+        x = self.fc2(x)
+        return self.fc(x)

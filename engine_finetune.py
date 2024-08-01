@@ -183,7 +183,7 @@ def train_reg_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 def train_multi_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
-                    mixup_fn: Optional[Mixup] = None, log_writer=None,
+                    mixup_fn: Optional[Mixup] = None, log_writer=None, adaptive=False,
                     args=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
@@ -212,7 +212,10 @@ def train_multi_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         with torch.cuda.amp.autocast():
             outputs = model(samples)
-            loss = criterion(outputs, targets, model=model)
+            if adaptive:
+                loss = criterion(outputs, targets, model=model)
+            else:
+                loss = criterion(outputs, targets)
 
         loss_value = loss.item()
 

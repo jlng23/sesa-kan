@@ -397,6 +397,83 @@ class HistoryWeightedSexAgeLoss():
         loss = self.weight[0] * sex_loss + self.weight[1] * age_loss
         return loss
 
+# class AdaptiveSexAgeLoss(nn.Module):
+#     def __init__(self,
+#             as_log: bool = False):
+#         super().__init__()
+
+#         self.as_log = as_log
+#         self.n : int = 0 # number of training steps passed
+#         # total sex_loss since last reset
+#         self.running_sex_loss = 0.0
+#         # total age_loss since last reset
+#         self.running_age_loss = 0.0
+#         self.running_weighted_loss = 0.0
+
+#         self.mse = nn.MSELoss(reduction='mean')
+#         #self.mse = mean_squared_log_error()
+#         self.bce = nn.BCEWithLogitsLoss(reduction='mean')
+
+#         self.reset()
+
+#     def reset(self):
+#         self.n : int = 0 # number of training steps passed
+#         # total sex_loss since last reset
+#         self.running_sex_loss = 0.0
+#         # total age_loss since last reset
+#         self.running_age_loss = 0.0
+#         self.running_weighted_loss = 0.0
+    
+#     def print_log(self, reset=True):
+
+#         ratio = self.running_sex_loss / self.running_age_loss
+#         average_loss = self.running_weighted_loss / self.n
+
+#         print()
+#         print(f'Sex loss (non-weighted):     ', self.running_sex_loss)
+#         print(f'Age loss (non-weighted):     ', self.running_age_loss)
+#         print(f'Ratio sex/age (of non-weighted losses):        ', ratio)
+#         print(f'----------------------------------------')
+#         print(f'Total loss (weighted):   ', self.running_weighted_loss)
+#         print(f'Average loss (weighted): ', average_loss)
+#         print()
+
+#         if reset:
+#             self.reset()
+
+#     def forward(self, preds, labels, **kwargs):
+
+#         self.sigma1 = kwargs['model'].sigma1
+#         self.sigma2 = kwargs['model'].sigma2
+
+#         sex_preds, age_preds = preds[:, [0]], preds[:, [1]]
+#         sex_labels, age_labels = labels[:, [0]], labels[:, [1]]
+
+#         sex_loss = self.bce(sex_preds, sex_labels)
+#         age_loss = self.mse(age_preds, age_labels)
+        
+#         self.running_sex_loss += sex_loss
+#         self.running_age_loss += age_loss
+#         self.n += len(preds)
+
+#         ## HACK FIXME: weird ".module" hack to access parameter when using DataParallel
+#         ## see https://discuss.pytorch.org/t/how-to-reach-model-attributes-wrapped-by-nn-dataparallel/1373/3
+#         if self.as_log:
+#             final_loss = age_loss / (2 * torch.exp(2 * kwargs['model'].sigma1)) + sex_loss / (torch.exp(2 * kwargs['model'].sigma2)) + kwargs['model'].sigma1 + kwargs['model'].sigma2
+#             #final_loss = age_loss / (2 * torch.exp(2 * kwargs['model'].module.sigma1)) + sex_loss / (torch.exp(2 * kwargs['model'].module.sigma2)) + kwargs['model'].module.sigma1 + kwargs['model'].module.sigma2
+#             self.running_weighted_loss += final_loss
+#             return final_loss
+#         else:
+#             final_loss = age_loss / (2 * kwargs['model'].sigma1 ** 2) + sex_loss / (kwargs['model'].sigma2 ** 2) + torch.log(kwargs['model'].sigma1) + torch.log(kwargs['model'].sigma2) 
+#             self.running_weighted_loss += final_loss
+#             return final_loss
+
+    # def apply_epsilon_constraint(self, epsilon=1e-3):
+    #     # Aplica uma restrição mínima para garantir que sigma1 e sigma2 não sejam menores que epsilon
+    #     self.sigma1 = torch.max(self.sigma1, torch.tensor(epsilon))
+    #     self.sigma2 = torch.max(self.sigma2, torch.tensor(epsilon))
+
+
 class AdaptiveSexAgeLoss(nn.Module):
     def __init__(self,
             as_log: bool = False):
@@ -411,7 +488,6 @@ class AdaptiveSexAgeLoss(nn.Module):
         self.running_weighted_loss = 0.0
 
         self.mse = nn.MSELoss(reduction='mean')
-        #self.mse = mean_squared_log_error()
         self.bce = nn.BCEWithLogitsLoss(reduction='mean')
 
         self.reset()
@@ -442,10 +518,6 @@ class AdaptiveSexAgeLoss(nn.Module):
             self.reset()
 
     def forward(self, preds, labels, **kwargs):
-
-        self.sigma1 = kwargs['model'].sigma1
-        self.sigma2 = kwargs['model'].sigma2
-
         sex_preds, age_preds = preds[:, [0]], preds[:, [1]]
         sex_labels, age_labels = labels[:, [0]], labels[:, [1]]
 
@@ -459,16 +531,11 @@ class AdaptiveSexAgeLoss(nn.Module):
         ## HACK FIXME: weird ".module" hack to access parameter when using DataParallel
         ## see https://discuss.pytorch.org/t/how-to-reach-model-attributes-wrapped-by-nn-dataparallel/1373/3
         if self.as_log:
-            final_loss = age_loss / (2 * torch.exp(2 * self.sigma1)) + sex_loss / (torch.exp(2 * self.sigma2)) + self.sigma1 + self.sigma2
-            #final_loss = age_loss / (2 * torch.exp(2 * kwargs['model'].module.sigma1)) + sex_loss / (torch.exp(2 * kwargs['model'].module.sigma2)) + kwargs['model'].module.sigma1 + kwargs['model'].module.sigma2
+            final_loss = age_loss / (2 * torch.exp(2 * kwargs['model'].sigma1)) + sex_loss / (torch.exp(2 * kwargs['model'].sigma2)) + kwargs['model'].sigma1 + kwargs['model'].sigma2
+            # final_loss = age_loss / (2 * torch.exp(2 * kwargs['model'].sigma1))
             self.running_weighted_loss += final_loss
             return final_loss
         else:
             final_loss = age_loss / (2 * kwargs['model'].sigma1 ** 2) + sex_loss / (kwargs['model'].sigma2 ** 2) + torch.log(kwargs['model'].sigma1) + torch.log(kwargs['model'].sigma2) 
             self.running_weighted_loss += final_loss
             return final_loss
-
-    def apply_epsilon_constraint(self, epsilon=1e-4):
-        # Aplica uma restrição mínima para garantir que sigma1 e sigma2 não sejam menores que epsilon
-        self.sigma1 = torch.max(self.sigma1, torch.tensor(epsilon))
-        self.sigma2 = torch.max(self.sigma2, torch.tensor(epsilon))
