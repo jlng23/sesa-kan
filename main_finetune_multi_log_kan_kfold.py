@@ -269,8 +269,14 @@ def pipeline(args, fold, train_folds, val_folds):
 
     cudnn.benchmark = True
 
-    dataset_train = build_dataset_multi(is_train=True, folds= train_folds, args=args)
-    dataset_val = build_dataset_multi(is_train=False, folds = val_folds, args=args)
+    dataset_train = build_dataset_multi(is_train=True,
+                                        folds= train_folds,
+                                        use_1st= False,
+                                        args=args)
+    dataset_val = build_dataset_multi(is_train=False,
+                                      folds = val_folds,
+                                        use_1st= False,
+                                        args=args)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
