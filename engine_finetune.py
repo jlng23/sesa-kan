@@ -56,7 +56,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         with torch.cuda.amp.autocast():
             outputs = model(samples)
             loss = criterion(outputs, targets)
-
+        
+                
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
@@ -183,18 +184,17 @@ def train_reg_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 def train_multi_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0,
-                    mixup_fn: Optional[Mixup] = None, log_writer=None, adaptive=False,
-                    args=None):
+                    mixup_fn: Optional[Mixup] = None, log_writer=None, adaptive=False, args=None):
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', misc.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 20
-
     accum_iter = args.accum_iter
     meter = meters.get_meter('SexAgeMeter')
     optimizer.zero_grad()
-
+    sigma1_sum = 0
+    
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
 
@@ -213,10 +213,17 @@ def train_multi_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         with torch.cuda.amp.autocast():
             outputs = model(samples)
             if adaptive:
-                loss = criterion(outputs, targets, model=model)
+                loss, sigma1, sigma2 = criterion(outputs, targets)
             else:
                 loss = criterion(outputs, targets)
-
+        
+        # optimizer.pc_backward([loss1, loss2]) # calculate the gradient can apply gradient modification
+        
+        # if isinstance(criterion, GradNormLoss):
+        # criterion.additional_forward_and_backward(model, optimizer)
+        
+    # Backpropagation e atualização dos parâmetros da loss
+            
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
@@ -230,8 +237,14 @@ def train_multi_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
 
+        # loss.backward(retain_graph=True)
+        # criterion.log_vars.grad = None 
+        # optimizer_loss.zero_grad()
+        # loss.backward()
+        # optimizer_loss.step()
+        
         torch.cuda.synchronize()
-
+        torch.cuda.empty_cache()
         metric_logger.update(loss=loss_value)
         min_lr = 10.
         max_lr = 0.
@@ -258,7 +271,12 @@ def train_multi_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             log_writer.add_scalar('loss', loss_value_reduce, epoch_1000x)
             log_writer.add_scalar('lr', max_lr, epoch_1000x)
             log_writer.add_scalar('mae', mse_value_reduce, epoch_1000x)
-
+            
+    #     sigma1_sum = sigma1_sum + sigma1
+    # sigma1_mean = sigma1_sum/accum_iter
+    # print(f"Sigma1: {sigma1_mean.item():.4f}")
+    if adaptive:
+        print(f"Sigma1: {sigma1.item():.4f}, Sigma2: {sigma2.item():.4f}")
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
@@ -300,7 +318,7 @@ def evaluate(data_loader, model, device):
 
 
 @torch.no_grad()
-def evaluate_multi(data_loader, model, device, criterion, name_meter):
+def evaluate_multi(data_loader, model, device, criterion, adaptive, name_meter):
     
     criterion = losses.get_loss_criterion(criterion)
     meter = meters.get_meter(name_meter)
@@ -320,7 +338,11 @@ def evaluate_multi(data_loader, model, device, criterion, name_meter):
         # compute output
         with torch.cuda.amp.autocast():
             output = model(images)
-            loss = criterion(output, target, model=model)
+            if adaptive:
+                loss, sigma1, sigma2 = criterion(output, target)
+            else:
+                loss = criterion(output, target)
+            
 
         # mse = mean_squared_error(output, target)
         # mae = mean_absolute_error(output, target)

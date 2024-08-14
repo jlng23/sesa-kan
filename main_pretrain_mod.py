@@ -128,7 +128,14 @@ def main(args):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
     
     # dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
-    dataset_train = build_dataset_multi(is_train=True, transform=transform_train, args=args, use_sex=True, use_age = False, use_1st=True, use_2nd=True)
+    dataset_train = build_dataset_multi(is_train=True, 
+                                        folds= [i for i in range(1, 30 + 1)],
+                                        transform=transform_train, 
+                                        args=args, 
+                                        use_sex=True, 
+                                        use_age = False, 
+                                        use_1st=True, 
+                                        use_2nd=True)
     print(dataset_train)
 
     if True:  # args.distributed:
@@ -197,10 +204,10 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
-        if args.output_dir and (epoch % 20 == 0 or epoch + 1 == args.epochs):
+        if args.output_dir and (epoch % 50 == 0 or epoch + 1 == args.epochs):
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                loss_scaler=loss_scaler, epoch=epoch)
+                loss_scaler=loss_scaler, epoch=epoch, fold=0)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         'epoch': epoch,}

@@ -44,6 +44,7 @@ from sklearn.model_selection import KFold
 # import kan
 from models_mae import KANLayer
 import torch.nn as nn
+from util.pcgrad import PCGrad
 
 
 def get_args_parser():
@@ -75,16 +76,18 @@ def get_args_parser():
                         help='head of the model is KAN')
     parser.add_argument('--num_folds', default=5, type=int,
                         help='number of the folds')
+    parser.add_argument('--use_1st', type=bool, default=False)
+    parser.add_argument('--use_2nd', type=bool, default=True)
     
-    parser.add_argument('--train_folds', default=[i for i in range(1, 30 + 1)],
+    parser.add_argument('--train_folds', default=[i for i in range(1, 25 + 1)],
                         help='folds of the train')
-    # parser.add_argument('--val_folds', default=[i for i in range(21, 25 + 1)],
-    #                     help='folds of the train')
+    parser.add_argument('--test_folds', default=[i for i in range(26, 30 + 1)],
+                        help='folds of the train')
     
     # Optimizer parameters
     parser.add_argument('--clip_grad', type=float, default=None, metavar='NORM',
                         help='Clip gradient norm (default: None, no clipping)')
-    parser.add_argument('--weight_decay', type=float, default=0.05,
+    parser.add_argument('--weight_decay', type=float, default=0.01,
                         help='weight decay (default: 0.05)')
 
     parser.add_argument('--lr', type=float, default=None, metavar='LR',
@@ -201,7 +204,14 @@ def train(args, model, criterion, data_loader_train, data_loader_val, dataset_va
         )
         
         print(f"Fold {fold}")
-        test_stats = evaluate_multi(data_loader_val, model, device, args.criterion, "SexAgeMeter")
+        
+        test_stats = evaluate_multi(data_loader_val,
+                                    model, 
+                                    device, 
+                                    args.criterion, 
+                                    adaptive, 
+                                    "SexAgeMeter")
+        
         print(f"REGRESSION of the network on the {len(dataset_val)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
         print(f"CLASSIFICATION of the network on the {len(dataset_val)} test images: ACC= {test_stats['acc']:.4f} F1= {test_stats['f1']:.4f}")
         # best_mae = min(best_mae, test_stats["mae"])
@@ -254,7 +264,7 @@ def train(args, model, criterion, data_loader_train, data_loader_val, dataset_va
     
     return test_stats
 
-def pipeline(args, fold, train_folds, val_folds):
+def pipeline(args, fold, train_folds, val_folds, test_folds):
     misc.init_distributed_mode(args)
 
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
@@ -271,11 +281,18 @@ def pipeline(args, fold, train_folds, val_folds):
 
     dataset_train = build_dataset_multi(is_train=True,
                                         folds= train_folds,
-                                        use_1st= False,
+                                        use_1st= args.use_1st,
+                                        use_2nd= args.use_2nd,
                                         args=args)
     dataset_val = build_dataset_multi(is_train=False,
                                       folds = val_folds,
-                                        use_1st= False,
+                                        use_1st= args.use_1st,
+                                        use_2nd= args.use_2nd,
+                                        args=args)
+    dataset_test = build_dataset_multi(is_train=False,
+                                      folds = test_folds,
+                                        use_1st= args.use_1st,
+                                        use_2nd= args.use_2nd,
                                         args=args)
 
     if True:  # args.distributed:
@@ -283,6 +300,9 @@ def pipeline(args, fold, train_folds, val_folds):
         global_rank = misc.get_rank()
         sampler_train = torch.utils.data.DistributedSampler(
             dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
+        )
+        sampler_test = torch.utils.data.DistributedSampler(
+            dataset_test, num_replicas=num_tasks, rank=global_rank, shuffle=True
         )
         print("Sampler_train = %s" % str(sampler_train))
         if args.dist_eval:
@@ -395,19 +415,7 @@ def pipeline(args, fold, train_folds, val_folds):
     print("accumulate grad iterations: %d" % args.accum_iter)
     print("effective batch size: %d" % eff_batch_size)
 
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module
-
-    # build optimizer with layer-wise lr decay (lrd)
-    param_groups = lrd.param_groups_lrd(model_without_ddp, args.weight_decay,
-        no_weight_decay_list=model_without_ddp.no_weight_decay(),
-        layer_decay=args.layer_decay
-    )
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
-    loss_scaler = NativeScaler()
     
-
     if mixup_fn is not None:
         # smoothing is handled with mixup label transform
         criterion = SoftTargetCrossEntropy()
@@ -419,16 +427,60 @@ def pipeline(args, fold, train_folds, val_folds):
         # criterion = torch.nn.CrossEntropyLoss()
         # criterion = torch.nn.MSELoss()
         criterion = losses.get_loss_criterion(args.criterion)
+        
+    if args.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model_without_ddp = model.module
+
+    # build optimizer with layer-wise lr decay (lrd)
+    param_groups = lrd.param_groups_lrd(model_without_ddp, args.weight_decay,
+        no_weight_decay_list=model_without_ddp.no_weight_decay(),
+        layer_decay=args.layer_decay
+    )
+    
+    # param_groups.append({'weight_decay': 0.0, 'params': list(criterion.parameters())})
+    
+    optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
+    # optimizer = torch.optim.AdamW([
+    #             {'params': param_groups, 'lr':args.lr},
+    #             {'params': criterion.parameters(), 'weight_decay': 0}	
+    #         ])
+    loss_scaler = NativeScaler()
+    # optimizer = PCGrad(optimizer)
+    
 
     print("criterion = %s" % str(criterion))
+    # optimizer_loss = torch.optim.Adam(criterion.parameters(), lr=0.0001)
 
-    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
+    # misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
     if args.eval:
-        test_stats = evaluate_multi(data_loader_val, model, device, args.criterion, "SexAgeMeter")
-        print(f"REG of the network on the {len(dataset_val)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
-        print(f"CLA of the network on the {len(dataset_val)} test images: ACC= {test_stats['acc']:.4f} F1= {test_stats['f1']:.4f}")
+        data_loader_test = torch.utils.data.DataLoader(
+            dataset_test, sampler=sampler_test,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=args.pin_mem,
+            drop_last=False
+        )
+        path = args.resume
+        for i in range(args.num_folds):
+            args.resume = path + f"/checkpoint-best-{i}.pth"
+            misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
+            test_stats = evaluate_multi(data_loader_test, model, device, args.criterion, "SexAgeMeter")
+            print(f"Fold {i}: REG of the network on the {len(dataset_test)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
+            print(f"Fold {i}: CLA of the network on the {len(dataset_test)} test images: ACC= {test_stats['acc']:.4f} F1= {test_stats['f1']:.4f}")
+            
+            log_stats = {**{f'test_{k}': v for k, v in test_stats.items()},
+                        'fold': i,
+                        'n_parameters': n_parameters}
+            
+            if args.output_dir and misc.is_main_process():
+                if log_writer is not None:
+                    log_writer.flush()
+                with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_stats) + "\n")
         exit(0)
+    
     
     m = train(args,
           model,
@@ -439,7 +491,9 @@ def pipeline(args, fold, train_folds, val_folds):
           optimizer, 
           model_without_ddp,
           device,
-          loss_scaler, mixup_fn, log_writer, n_parameters, adaptive_mode, fold)
+          loss_scaler,
+          mixup_fn,
+          log_writer, n_parameters, adaptive_mode, fold)
     
     return m
     
@@ -458,7 +512,12 @@ def main(args):
         print(f" Validation folds: {val_folds} ".center(80, "-"))
         print(f" Training folds: {train_folds} ".center(80, "-"))  
         
-        m = pipeline(args, fold, train_folds = train_folds, val_folds = val_folds)
+        m = pipeline(args, 
+                     fold, 
+                     train_folds = train_folds, 
+                     val_folds = val_folds, 
+                     test_folds = args.test_folds
+                     )
         cv_metrics.append(m)
     
     if (args.use_sex and args.use_age):

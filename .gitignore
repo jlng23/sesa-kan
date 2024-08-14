@@ -13,6 +13,11 @@ finetune_multi_log/
 finetune_multi_log_kan/
 eval_run/
 
+mae_visualize copy.ipynb
+submitit_pretrain_mod.py
+util/pcgrad.py
+util/qtd_dentes.csv
+
 nohup.out
 .vscode/
 __pycache__/

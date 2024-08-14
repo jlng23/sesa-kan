@@ -24,6 +24,8 @@ import torchvision.transforms as T
 import albumentations as A
 import numpy as np
 from PIL import Image, ImageFile
+import pandas as pd
+
 
 class RadiographSexAgeDataset(Dataset):
     def __init__(
@@ -37,7 +39,8 @@ class RadiographSexAgeDataset(Dataset):
         use_1st: bool = True,
         use_2nd: bool = True,
         bia_paper: bool = True,
-        age_division: int = 100
+        age_division: int = 100,
+        remove: List[str] = None
     ):
         super().__init__()
 
@@ -50,6 +53,7 @@ class RadiographSexAgeDataset(Dataset):
         self.use_1st = use_1st
         self.use_2nd = use_2nd
         self.bia_paper = bia_paper
+        self.remove = remove
 
         self.age_division = age_division
 
@@ -69,6 +73,7 @@ class RadiographSexAgeDataset(Dataset):
             raise Exception('At least sex or age input must be True.')
 
         # labels
+        TOLERANCIA = 95
         self.filepaths = []
         for i in fold_nums:
             filepath = os.path.join(root_dir, fold_txt_dir, f'{i:02d}.txt')
@@ -81,19 +86,57 @@ class RadiographSexAgeDataset(Dataset):
                     if not self.use_2nd and img_relpath.startswith('2nd-set/'):
                         continue
 
+                    # filename = img_relpath.split('/')[-1]
+                    # sex, prob, years, months = self._get_attributes(filename)
+
+                    # if use_sex and sex not in ['M', 'F']:
+                    #     # print('Skipping file with missing sex:', filename)
+                    #     continue
+                    
+                    # if sex == "NA":
+                    #     # print('Skipping file with missing sex:', filename)
+                    #     continue
+                  
+                    # if use_age and years == 'YNA':
+                    #     # print('Skipping file with missing years:', filename)
+                    #     continue
+                    # if use_age and months == 'MNA':
+                    #     print('Skipping file with missing months:', filename)
+                    #     continue
+                    
+                    # if '.' in prob:
+                    #     prob = float(prob)*100
+                    # prob = int(prob)
+
+                    # if prob < TOLERANCIA:
+                    #     print('Skipping file with missing prob:', filename)
+                    #     continue
                     filename = img_relpath.split('/')[-1]
-                    sex, _, years, months = self._get_attributes(filename)
+                    fname = filename.split('-')
+                    if fname[0].startswith('.'):
+                        continue
+                    sex, prob, year = fname[10:13]
 
-                    if use_sex and sex not in ['M', 'F']:
-                        continue
-                    if use_age and years == 'YNA':
-                        continue
-                    if use_age and months == 'MNA':
-                        print('Skipping file with missing months:', filename)
-                        continue
+                    if sex == "NA":
+                      continue
 
+                    if year == 'YNA':
+                      # print(year)
+                      continue
+                    if '.' in prob:
+                        prob = float(prob)*100
+                    prob = int(prob)
+
+                    if prob < TOLERANCIA:
+                        continue
                     self.filepaths.append(os.path.join(root_dir, img_relpath))
-
+        if self.remove is not None:
+            # Contar o número de elementos antes da remoção
+            n1 = len(self.filepaths)        
+            # Remover os elementos pelos índices
+            self.filepaths = [valor for indice, valor in enumerate(self.filepaths) if valor.split('/')[-1] not in self.remove]          
+            print(f"Removed {n1-len(self.filepaths)} images")
+          
         # this maybe useful later for reproducibility
         self.filepaths.sort()
         print(f'\nLoaded {len(self.filepaths)} images.')
@@ -140,13 +183,13 @@ class RadiographSexAgeDataset(Dataset):
             label.append(sex_label)
 
             assert years != 'YNA'
-            assert months != 'MNA'
+            # assert months != 'MNA'
             label.append(int(years[1:]) / self.age_division)
             # TODO: add months
             # label.append(months)
         elif self.use_age and not self.use_sex:
             assert years != 'YNA'
-            assert months != 'MNA'
+            # assert months != 'MNA'
             label.append(int(years[1:]) / self.age_division)
 
         label_tensor = torch.tensor(label, dtype=torch.float32)
@@ -172,6 +215,10 @@ def build_dataset_multi(is_train, args, folds, transform = None, use_sex=True, u
     if transform is None:
         transform = build_transform(is_train, args)
         
+    df_qdt = pd.read_csv('util/qtd_dentes.csv')  
+    # remove = df_qdt[df_qdt['qtd']<1].path.to_list()
+    remove = None
+    
     dataset = RadiographSexAgeDataset(
                 args.data_path,
                 folds,
@@ -180,7 +227,8 @@ def build_dataset_multi(is_train, args, folds, transform = None, use_sex=True, u
                 use_age=use_age,
                 use_1st=use_1st,
                 use_2nd=use_2nd, 
-                bia_paper=False
+                bia_paper=False,
+                remove=remove
             )
 
     return dataset

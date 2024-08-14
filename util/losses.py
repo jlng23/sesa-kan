@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 #from torchmetrics.functional import mean_squared_log_error
+import torch.optim as optim
 
 def get_loss_criterion(loss_name):
     if loss_name in ['cross_entropy', 'cel', 'CrossEntropyLoss']:
@@ -13,6 +14,14 @@ def get_loss_criterion(loss_name):
         return SimpleCustomSexAgeLoss()
     elif loss_name == 'custom_weighted_mtl':
         return WeightedCustomSexAgeLoss()
+    elif loss_name == 'dynamooth_weighted_mtl':
+        return WeightedUncertSmoothLoss()
+    elif loss_name == 'dynamic_weighted_mtl':
+        return WeightedUncertaintyLoss()
+    elif loss_name == 'self_weighted_mtl':
+        return WeightedSelfSexAgeLoss()
+    elif loss_name == 'huber_weighted_mtl':
+        return WeightedHuberSexAgeLoss()
     elif loss_name == 'simple_weighted_loss':
         print(' Using SimpleWeightedSexAgeLoss with weights 0.02, 0.98 '.center(80, '-'))
         return SimpleWeightedSexAgeLoss()
@@ -28,12 +37,197 @@ def get_loss_criterion(loss_name):
         print(" Using log adaptive loss ".center(80, '-'))
     else:
         raise ValueError(f'Unknown loss name: {loss_name}')
+    
+class WeightedUncertSmoothLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
 
+        # Inicializar parâmetros treináveis para a incerteza de cada tarefa
+        # self.log_vars = nn.Parameter(torch.ones(2, requires_grad=True))
+        self.log_vars = nn.Parameter(torch.zeros(2))
+        
+        # Funções de loss para cada tarefa
+        self.mse = nn.MSELoss(reduction='mean')
+        self.bce = nn.BCEWithLogitsLoss(reduction='mean')
+#         self.running_weighted_loss = 0.0
+
+        self.reset()
+
+    def reset(self):
+        self.n = 0
+        self.sex_loss = 0
+        self.age_loss = 0
+#         self.running_weighted_loss = 0.0
+        
+    def forward(self, preds, labels, **kwargs):
+        # loss da tarefa de classificação (sexo)
+        pred_sex, label_sex = preds[:, [0]], labels[:, [0]]
+        loss1 = self.bce(pred_sex, label_sex)
+
+        # loss da tarefa de regressão (idade)
+        pred_age, label_age = preds[:, [1]], labels[:, [1]]
+        loss2 = self.mse(pred_age, label_age)
+
+        # Acumular as losses para estatísticas
+        batch = len(preds)
+        self.sex_loss += loss1.item() * batch
+        self.age_loss += loss2.item() * batch
+        self.n += batch
+        
+        # O último termo log(σ1σ2) pode ser visto como um termo de penalidade. 
+        # Da perspectiva da penalidade, para evitar penalidade negativa durante o treinamento, 
+        # podemos modificar log(σ) para log(1+σ²).
+        
+        sex_loss1 = loss1 / (2 * torch.exp(2 * self.log_vars[0])) + torch.log(1 + self.log_vars[0]** 2)
+        age_loss2 = loss2 / (torch.exp(2 * self.log_vars[1])) + torch.log(1 + self.log_vars[1]** 2)
+
+        # Soma as perdas ponderadas
+        loss = sex_loss1 + age_loss2
+
+        return loss, self.log_vars[0], self.log_vars[1]
+
+class WeightedUncertaintyLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        # Inicializar parâmetros treináveis para a incerteza de cada tarefa
+        self.log_vars = nn.Parameter(torch.zeros(2))
+        
+        # Funções de loss para cada tarefa
+        self.mse = nn.MSELoss(reduction='mean')
+        self.bce = nn.BCEWithLogitsLoss(reduction='mean')
+#         self.running_weighted_loss = 0.0
+
+        self.reset()
+
+    def reset(self):
+        self.n = 0
+        self.sex_loss = 0
+        self.age_loss = 0
+#         self.running_weighted_loss = 0.0
+        
+    def forward(self, preds, labels, **kwargs):
+        # loss da tarefa de classificação (sexo)
+        pred_sex, label_sex = preds[:, [0]], labels[:, [0]]
+        loss1 = self.bce(pred_sex, label_sex)
+
+        # loss da tarefa de regressão (idade)
+        pred_age, label_age = preds[:, [1]], labels[:, [1]]
+        loss2 = self.mse(pred_age, label_age)
+
+        # Acumular as losses para estatísticas
+        batch = len(preds)
+        self.sex_loss += loss1.item() * batch
+        self.age_loss += loss2.item() * batch
+        self.n += batch
+        
+        loss = loss1 / (2 * torch.exp(2 * self.log_vars[0])) + loss2 / (torch.exp(2 * self.log_vars[1])) + self.log_vars[0] + self.log_vars[1]
+#       loss = loss1 / (2 * self.log_vars[0] ** 2) + loss2 / (self.log_vars[1] ** 2) + torch.log(self.log_vars[0]) + torch.log(self.log_vars[1]) 
+        
+        return loss, self.log_vars[0], self.log_vars[1]
+
+
+class WeightedHuberSexAgeLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.weight = torch.tensor([0.2, 0.8])
+        self.mse = nn.HuberLoss(reduction='mean')
+        self.bce = nn.BCEWithLogitsLoss(reduction='mean')
+
+        self.reset()
+
+    def reset(self):
+        self.n = 0
+        self.sex_loss = 0
+        self.age_loss = 0
+
+    def print_log(self, reset=True):
+
+        ratio = self.sex_loss / self.age_loss
+        # adjust the weights so their sum is one
+        self.weight = torch.tensor([1/(ratio + 1), ratio / (ratio + 1)])
+        total_loss = (self.age_loss + self.sex_loss)
+        average_loss = total_loss / self.n
+
+        print()
+        print(f'Sex loss:     ', self.sex_loss)
+        print(f'Age loss:     ', self.age_loss)
+        print(f'Ratio:        ', ratio)
+        print(f'----------------------------------------')
+        print(f'Total loss:   ', total_loss)
+        print(f'Average loss: ', average_loss)
+        print()
+
+        if reset:
+            self.reset()
+
+    def forward(self, preds, labels, **kwargs):
+
+        # sex loss
+        pred_sex, label_sex = preds[:, [0]], labels[:, [0]]
+        loss1 = self.bce(pred_sex, label_sex)
+
+        # age loss
+        pred_age, label_age = preds[:, [1]], labels[:, [1]]
+        loss2 = self.mse(pred_age, label_age)
+        
+        # ratio = loss1 / loss2 
+        # # adjust the weights so their sum is one
+        # self.weight = torch.tensor([1/(ratio + 1), ratio / (ratio + 1)])
+
+        loss = loss1 * self.weight[0] + loss2 * self.weight[1]
+        # loss = loss1 + loss2
+
+        return loss
+    
+class WeightedSelfSexAgeLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        # Inicializar parâmetros treináveis para a incerteza de cada tarefa
+        self.log_vars = nn.Parameter(torch.zeros(2))
+        
+        # Funções de loss para cada tarefa
+        self.mse = nn.MSELoss(reduction='mean')
+        self.bce = nn.BCEWithLogitsLoss(reduction='mean')
+
+        self.reset()
+
+    def reset(self):
+        self.n = 0
+        self.sex_loss = 0
+        self.age_loss = 0
+
+    def forward(self, preds, labels, **kwargs):
+        # loss da tarefa de classificação (sexo)
+        pred_sex, label_sex = preds[:, [0]], labels[:, [0]]
+        loss1 = self.bce(pred_sex, label_sex)
+
+        # loss da tarefa de regressão (idade)
+        pred_age, label_age = preds[:, [1]], labels[:, [1]]
+        loss2 = self.mse(pred_age, label_age)
+
+        # Acumular as losses para estatísticas
+        batch = len(preds)
+        self.sex_loss += loss1.item() * batch
+        self.age_loss += loss2.item() * batch
+        self.n += batch
+
+        # Calcular a loss total com autoponderação
+        precision1 = torch.exp(-self.log_vars[0])
+        precision2 = torch.exp(-self.log_vars[1])
+        
+        loss = precision1 * loss1 + self.log_vars[0] + precision2 * loss2 + self.log_vars[1]
+
+        return loss, loss1, loss2
+
+    
 class WeightedCustomSexAgeLoss(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.weight = torch.tensor([0.5, 0.5])
+        self.weight = torch.tensor([0.1, 0.9])
         self.mse = nn.MSELoss(reduction='mean')
         self.bce = nn.BCEWithLogitsLoss(reduction='mean')
 

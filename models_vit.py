@@ -89,7 +89,7 @@ def vit_large_patch16(adaptive_mode, **kwargs):
     return model
 
 
-def vit_huge_patch14(**kwargs):
+def vit_huge_patch14(adaptive_mode,**kwargs):
     model = VisionTransformer(
         patch_size=14, embed_dim=1280, depth=32, num_heads=16, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
