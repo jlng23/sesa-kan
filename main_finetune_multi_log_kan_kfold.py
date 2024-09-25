@@ -66,8 +66,8 @@ def get_args_parser():
                         help='Drop path rate (default: 0.1)')
     
     # MTL parameters
-    parser.add_argument('--adaptive_mode', default='log', type=str, metavar='MODE', 
-                        help='Adaptive mode for noise parameters (standard, log)')
+    parser.add_argument('--adaptive', type=bool, default=False, 
+                        help='Adaptive mode for noise parameters')
     parser.add_argument('--use_age', type=bool, default=True)
     parser.add_argument('--use_sex', type=bool, default=True)
     parser.add_argument('--criterion', default= 'log_adaptive', type=str,
@@ -182,13 +182,11 @@ def get_args_parser():
 
     return parser
 
-def train(args, model, criterion, data_loader_train, data_loader_val, dataset_val, optimizer,model_without_ddp, device, loss_scaler, mixup_fn, log_writer, n_parameters, adaptive_mode, fold):
+def train(args, model, criterion, data_loader_train, data_loader_val, dataset_val, optimizer,model_without_ddp, device, loss_scaler, mixup_fn, log_writer, n_parameters, fold):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     best_mae, best_f1, best_loss, best_epoch = float('inf'), float('inf'), float('inf'), 0
-    adaptive = False
-    if adaptive_mode != None:
-        adaptive = True
+    
     for epoch in range(args.start_epoch, args.epochs):
         
         if args.distributed:
@@ -199,7 +197,7 @@ def train(args, model, criterion, data_loader_train, data_loader_val, dataset_va
             optimizer, device, epoch, loss_scaler,
             args.clip_grad, mixup_fn,
             log_writer=log_writer,
-            adaptive = adaptive,
+            adaptive = args.adaptive,
             args=args
         )
         
@@ -209,7 +207,7 @@ def train(args, model, criterion, data_loader_train, data_loader_val, dataset_va
                                     model, 
                                     device, 
                                     args.criterion, 
-                                    adaptive, 
+                                    args.adaptive, 
                                     "SexAgeMeter")
         
         print(f"REGRESSION of the network on the {len(dataset_val)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
@@ -239,7 +237,7 @@ def train(args, model, criterion, data_loader_train, data_loader_val, dataset_va
         print(f'Best MAE: {best_mae:.4f}')
         print(f'Best F1: {best_f1:.4f}')
         
-        if adaptive_mode != None:
+        if args.adaptive:
             print(f'Sigma 1: {model.sigma1[0]}, Sigma 2: {model.sigma2[0]}')
              
         if log_writer is not None:
@@ -348,16 +346,8 @@ def pipeline(args, fold, train_folds, val_folds, test_folds):
             mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
-    
-          
-    if (args.criterion == 'adaptive'):
-        adaptive_mode = 'standard'
-    elif (args.criterion == 'log_adaptive'):
-        adaptive_mode = 'log'
-    else:
-        adaptive_mode = None
-        
-    model = models_vit.__dict__[args.model](adaptive_mode,
+     
+    model = models_vit.__dict__[args.model](
         num_classes=args.nb_classes,
         drop_path_rate=args.drop_path,
         global_pool=args.global_pool,
@@ -381,9 +371,9 @@ def pipeline(args, fold, train_folds, val_folds, test_folds):
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
 
-        if args.global_pool and adaptive_mode != None:
-            assert set(msg.missing_keys) == {'sigma1', 'sigma2','head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}     
-        elif args.global_pool and adaptive_mode == None:
+        # if args.global_pool and args.adaptive != None:
+        #     assert set(msg.missing_keys) == {'sigma1', 'sigma2','head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}     
+        if args.global_pool:
             assert set(msg.missing_keys) == {'head.weight', 'head.bias', 'fc_norm.weight', 'fc_norm.bias'}
         else:
             assert set(msg.missing_keys) == {'head.weight', 'head.bias'}
@@ -437,20 +427,16 @@ def pipeline(args, fold, train_folds, val_folds, test_folds):
         no_weight_decay_list=model_without_ddp.no_weight_decay(),
         layer_decay=args.layer_decay
     )
-    
-    # param_groups.append({'weight_decay': 0.0, 'params': list(criterion.parameters())})
+    if args.adaptive:
+        param_groups.append({'weight_decay': 0.0, 'params': list(criterion.parameters())})
     
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
-    # optimizer = torch.optim.AdamW([
-    #             {'params': param_groups, 'lr':args.lr},
-    #             {'params': criterion.parameters(), 'weight_decay': 0}	
-    #         ])
+    
     loss_scaler = NativeScaler()
     # optimizer = PCGrad(optimizer)
     
 
     print("criterion = %s" % str(criterion))
-    # optimizer_loss = torch.optim.Adam(criterion.parameters(), lr=0.0001)
 
     # misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
 
@@ -466,7 +452,7 @@ def pipeline(args, fold, train_folds, val_folds, test_folds):
         for i in range(args.num_folds):
             args.resume = path + f"/checkpoint-best-{i}.pth"
             misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
-            test_stats = evaluate_multi(data_loader_test, model, device, args.criterion, "SexAgeMeter")
+            test_stats = evaluate_multi(data_loader_test, model, device, args.criterion, args.adaptive, "SexAgeMeter")
             print(f"Fold {i}: REG of the network on the {len(dataset_test)} test images: MAE= {test_stats['mae']:.4f} R2= {test_stats['r2']:.4f}")
             print(f"Fold {i}: CLA of the network on the {len(dataset_test)} test images: ACC= {test_stats['acc']:.4f} F1= {test_stats['f1']:.4f}")
             
@@ -493,7 +479,7 @@ def pipeline(args, fold, train_folds, val_folds, test_folds):
           device,
           loss_scaler,
           mixup_fn,
-          log_writer, n_parameters, adaptive_mode, fold)
+          log_writer, n_parameters, fold)
     
     return m
     
