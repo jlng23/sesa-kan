@@ -30,14 +30,14 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 
 import util.lr_decay as lrd
 import util.misc as misc
-from util.datasets import build_dataset, build_dataset_multi
+from util.datasets import build_dataset, build_dataset_multi, build_dataset_multi_eval
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
 from util import losses
 import models_vit
 
-from engine_finetune import evaluate_multi, train_multi_one_epoch
+from engine_finetune import evaluate_multi, train_multi_one_epoch, predict_multi
 from sklearn.model_selection import KFold
 # Define a nova camada final para a rede KAN
 # import util.fastkan as kan
@@ -237,8 +237,8 @@ def train(args, model, criterion, data_loader_train, data_loader_val, dataset_va
         print(f'Best MAE: {best_mae:.4f}')
         print(f'Best F1: {best_f1:.4f}')
         
-        if args.adaptive:
-            print(f'Sigma 1: {model.sigma1[0]}, Sigma 2: {model.sigma2[0]}')
+        # if args.adaptive:
+        #     print(f'Sigma 1: {model.sigma1[0]}, Sigma 2: {model.sigma2[0]}')
              
         if log_writer is not None:
             log_writer.add_scalar('perf/test_mae', test_stats['mae'], epoch)
@@ -384,7 +384,14 @@ def pipeline(args, fold, train_folds, val_folds, test_folds):
     if args.head_kan:
         input_dim = model.head.in_features  # Obtém o número de características de entrada da última camada original
         output_dim = args.nb_classes
-        model.head = KANLayer(input_dim, output_dim)  
+        model.head = KANLayer(input_dim, output_dim)
+        print('features de entrada da última camada original')
+        print(input_dim)
+        print("adicionada camada KAN!")
+    else:
+        print('features de entrada da última camada original')
+        print(model.head.in_features)
+        print("NÃO foi adicionada aCamada KAN !") 
     
     model.to(device)
 
@@ -459,6 +466,21 @@ def pipeline(args, fold, train_folds, val_folds, test_folds):
             log_stats = {**{f'test_{k}': v for k, v in test_stats.items()},
                         'fold': i,
                         'n_parameters': n_parameters}
+            
+            dataset_test_pred = build_dataset_multi_eval(is_train=False,
+                                      folds = test_folds,
+                                        use_1st= args.use_1st,
+                                        use_2nd= args.use_2nd,
+                                        args=args)
+            data_loader_test_pred = torch.utils.data.DataLoader(
+                dataset_test_pred, sampler=sampler_test,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                pin_memory=args.pin_mem,
+                drop_last=False
+            )
+            pred = predict_multi(data_loader_test_pred, model, device, args.criterion, args.adaptive, "SexAgeMeter")
+            pred.to_csv(os.path.join(path, f"pred_log_{args.criterion}_{i}.csv"))
             
             if args.output_dir and misc.is_main_process():
                 if log_writer is not None:

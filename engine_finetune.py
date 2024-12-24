@@ -412,3 +412,38 @@ def evaluate_reg(data_loader, model, device):
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
+import pandas as pd
+
+@torch.no_grad()
+def predict_multi(data_loader, model, device, criterion, adaptive, name_meter):
+    
+    criterion = losses.get_loss_criterion(criterion)
+    meter = meters.get_meter(name_meter)
+
+    metric_logger = misc.MetricLogger(delimiter="  ")
+    header = 'Test:'
+
+    # switch to evaluation mode
+    model.eval()
+    
+    targets, outputs, names = [], [], []
+    
+    for batch in metric_logger.log_every(data_loader, 10, header):
+        images = batch[0]
+        target = batch[1]
+        name = batch[-1]
+        images = images.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)
+        # name = name.to(device, non_blocking=True)
+
+        # compute output
+        with torch.cuda.amp.autocast():
+            output = model(images)
+        targets.extend(target.detach().cpu().numpy())
+        outputs.extend(output.detach().cpu().numpy())
+        names.extend(name[0])
+        
+    df = pd.DataFrame(targets, columns=["target 1", "target 2"])
+    df[['output 1', 'output 2']] = outputs        
+    df['filenames'] = names
+    return df

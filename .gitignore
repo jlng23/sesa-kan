@@ -13,6 +13,14 @@ finetune_multi_log/
 finetune_multi_log_kan/
 eval_run/
 
+demo/cam.jpg
+demo/filename.csv
+demo/mae_visualize_GRADCAM.ipynb
+demo/mae_visualize_filename.ipynb
+demo/mae_visualize_gray.ipynb
+demo/output.png
+demo/remove_filenam_outliers.ipynb
+
 mae_visualize copy.ipynb
 submitit_pretrain_mod.py
 util/pcgrad.py
